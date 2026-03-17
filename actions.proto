@@ -1,0 +1,291 @@
+syntax = "proto3";
+
+package execd.actions;
+
+import "common.proto";
+
+// =============================================================================
+// Action Types
+// =============================================================================
+// Each action type encodes all the parameters needed for execution.
+// Following Rob Pike's Rule #5: the data structure determines behavior.
+// 
+// Example: MakerOrderAction with price_method = BEST_BID tells you:
+//   1. This is a passive order (maker)
+//   2. Price should be calculated from orderbook (best bid)
+//   3. It should be post-only to ensure maker execution
+
+// =============================================================================
+// Maker Order Action
+// =============================================================================
+// Places a passive limit order at the best bid/ask. Follows orderbook and
+// amends price as the market moves. Used for accumulating positions with
+// minimal market impact.
+
+message MakerOrderAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+  execd.common.Side side = 4;
+  string size = 5;                              // Use string for precise decimal
+  execd.common.MakerPriceMethod price_method = 6;
+  string price_offset = 7;                      // Optional offset from reference price
+  int32 order_timeout_ms = 8;                   // Timeout before auto-cancel
+  bool cancel_on_partial_fill = 9;
+  string leverage = 10;                         // For perp markets
+  bool reduce_only = 11;
+  bool post_only = 12;                          // Ensure maker-only execution
+}
+
+// =============================================================================
+// DCA Maker Order Action
+// =============================================================================
+// Places multiple maker orders over time using Dollar Cost Averaging.
+// Total size is split into smaller orders placed at intervals.
+
+message DCAMakerOrderAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+  execd.common.Side side = 4;
+  string total_size = 5;                        // Total amount to execute
+  string dca_size = 6;                          // Size per individual order
+  execd.common.MakerPriceMethod price_method = 7;
+  string price_offset = 8;
+  int32 order_timeout_ms = 9;
+  bool cancel_on_partial_fill = 10;
+  string leverage = 11;
+  bool reduce_only = 12;
+  bool best_effort_completion = 13;             // Continue even if dca_size > remaining
+}
+
+// =============================================================================
+// Taker Order Action
+// =============================================================================
+// Places an aggressive market/limit order for immediate execution.
+// Used when speed is more important than execution price.
+
+message TakerOrderAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+  execd.common.Side side = 4;
+  string size = 5;
+  string price = 6;                             // Empty for market order
+  string leverage = 7;
+  bool reduce_only = 8;
+  string slippage_tolerance = 9;                // Max acceptable slippage
+}
+
+// =============================================================================
+// Maker-Taker Action
+// =============================================================================
+// Coordinated execution across two legs. Maker leg fills first,
+// then taker leg executes to hedge. Common for basis trading and arb.
+
+message MakerTakerAction {
+  // Maker leg
+  execd.common.Exchange maker_exchange = 1;
+  string maker_symbol = 2;
+  execd.common.InstrumentType maker_instrument_type = 3;
+  execd.common.Side maker_side = 4;
+  execd.common.MakerPriceMethod maker_price_method = 5;
+  string maker_leverage = 6;
+  bool maker_reduce_only = 7;
+  
+  // Taker leg
+  execd.common.Exchange taker_exchange = 8;
+  string taker_symbol = 9;
+  execd.common.InstrumentType taker_instrument_type = 10;
+  execd.common.Side taker_side = 11;
+  string taker_leverage = 12;
+  bool taker_reduce_only = 13;
+  
+  // Execution parameters
+  string pending_amount = 14;
+  string dca_amount = 15;
+  string maker_taker_ratio = 16;
+  int32 order_timeout_ms = 17;
+  bool cancel_on_partial_fill = 18;
+}
+
+// =============================================================================
+// Order Management Actions
+// =============================================================================
+
+// Cancel order
+message CancelOrderAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+  string order_id = 4;
+  bool cancel_all = 5;                          // If true, cancel all orders for symbol
+}
+
+// Amend order
+message AmendOrderAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+  string order_id = 4;
+  string new_price = 5;
+  string new_size = 6;
+}
+
+// =============================================================================
+// Query Actions
+// =============================================================================
+
+// Get balance
+message GetBalanceAction {
+  execd.common.Exchange exchange = 1;
+  string asset = 2;                             // Empty for all assets
+}
+
+// Get positions
+message GetPositionsAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;                            // Empty for all positions
+}
+
+// Get open orders
+message GetOpenOrdersAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+}
+
+// Set leverage
+message SetLeverageAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+  string leverage = 4;
+}
+
+// =============================================================================
+// Action Results
+// =============================================================================
+
+message OrderResult {
+  string order_id = 1;
+  string client_order_id = 2;
+  execd.common.OrderStatus status = 3;
+  string executed_qty = 4;
+  string executed_price = 5;
+  string remaining_qty = 6;
+  int64 order_timestamp_ns = 7;
+  int64 fill_timestamp_ns = 8;
+  string fee = 9;
+  string fee_asset = 10;
+}
+
+message BalanceResult {
+  repeated WalletBalance balances = 1;
+}
+
+message WalletBalance {
+  string asset = 1;
+  string free = 2;
+  string locked = 3;
+  string total = 4;
+}
+
+message PositionsResult {
+  repeated Position positions = 1;
+}
+
+message Position {
+  string symbol = 1;
+  execd.common.Side side = 2;
+  string size = 3;
+  string entry_price = 4;
+  string mark_price = 5;
+  string unrealized_pnl = 6;
+  string leverage = 7;
+  string liquidation_price = 8;
+}
+
+message OpenOrdersResult {
+  repeated OpenOrder orders = 1;
+}
+
+message OpenOrder {
+  string order_id = 1;
+  string client_order_id = 2;
+  string symbol = 3;
+  execd.common.Side side = 4;
+  string price = 5;
+  string size = 6;
+  string filled_size = 7;
+  execd.common.OrderStatus status = 8;
+  int64 created_timestamp_ns = 9;
+}
+
+message LeverageResult {
+  bool success = 1;
+  string current_leverage = 2;
+}
+
+// =============================================================================
+// Streaming Update Payloads
+// =============================================================================
+
+message OrderUpdatePayload {
+  string order_id = 1;
+  string client_order_id = 2;
+  string symbol = 3;
+  execd.common.Side side = 4;
+  execd.common.OrderStatus status = 5;
+  string price = 6;
+  string size = 7;
+  string filled_size = 8;
+  string filled_value = 9;
+  int64 timestamp_ns = 10;
+}
+
+message ExecutionUpdatePayload {
+  string execution_id = 1;
+  string order_id = 2;
+  string symbol = 3;
+  execd.common.Side side = 4;
+  string price = 5;
+  string size = 6;
+  string fee = 7;
+  string fee_asset = 8;
+  int64 timestamp_ns = 9;
+}
+
+message PositionUpdatePayload {
+  string symbol = 1;
+  execd.common.Side side = 2;
+  string size = 3;
+  string entry_price = 4;
+  string unrealized_pnl = 5;
+  int64 timestamp_ns = 6;
+}
+
+message WalletUpdatePayload {
+  string asset = 1;
+  string balance = 2;
+  string available = 3;
+  int64 timestamp_ns = 4;
+}
+
+message MarketUpdatePayload {
+  string symbol = 1;
+  string best_bid = 2;
+  string best_ask = 3;
+  string last_price = 4;
+  string volume_24h = 5;
+  int64 timestamp_ns = 6;
+}
+
+message ActionStatusUpdate {
+  string action_id = 1;
+  execd.common.ActionStatus status = 2;
+  string message = 3;
+  string completed_amount = 4;
+  string pending_amount = 5;
+  int64 timestamp_ns = 6;
+}

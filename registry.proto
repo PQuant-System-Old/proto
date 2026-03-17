@@ -1,0 +1,65 @@
+// WorkerRegistry — lightweight process manager running inside each ECS task.
+//
+// Responsibilities:
+//   1. Spawn hybrid worker processes on pre-allocated ports
+//   2. Track and report active workers
+//   3. Kill workers and reclaim ports on shutdown
+//
+// NOT in the data path: after SpawnWorker returns worker_addr, execd talks
+// directly to the worker via the standard WorkerService contract.
+
+syntax = "proto3";
+package execd.registry;
+
+option java_multiple_files = true;
+
+service WorkerRegistry {
+  // Spawn a new hybrid worker process.
+  // Returns the direct TCP address that execd should use for all subsequent
+  // WorkerService RPCs (Register, ExecuteAction, HealthCheck, etc.).
+  rpc SpawnWorker(SpawnWorkerRequest) returns (SpawnWorkerResponse);
+
+  // Shutdown a previously spawned worker and reclaim its port.
+  rpc ShutdownWorker(ShutdownWorkerRequest) returns (ShutdownWorkerResponse);
+
+  // List all active workers on this ECS task / container.
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse);
+}
+
+message SpawnWorkerRequest {
+  // Strategy name — used for logging and identification only.
+  // The registry does NOT interpret this field; it just labels the child process.
+  string strategy_name = 1;
+}
+
+message SpawnWorkerResponse {
+  bool success = 1;
+  // Direct TCP address for WorkerService RPCs, e.g. "10.0.1.5:50053".
+  // execd should connect to this address and bypass the registry for all
+  // subsequent calls.
+  string worker_addr = 2;
+  string message = 3;
+}
+
+message ShutdownWorkerRequest {
+  // The worker_addr returned by SpawnWorker.
+  string worker_addr = 1;
+}
+
+message ShutdownWorkerResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListWorkersRequest {}
+
+message ListWorkersResponse {
+  repeated WorkerInfo workers = 1;
+}
+
+message WorkerInfo {
+  string worker_addr = 1;
+  string strategy_name = 2;
+  int32 pid = 3;
+  bool healthy = 4;
+}

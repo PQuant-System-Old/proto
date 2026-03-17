@@ -1,0 +1,223 @@
+syntax = "proto3";
+
+package execd.common;
+
+// =============================================================================
+// Request/Response Metadata
+// =============================================================================
+// These types are included in all requests/responses for tracing and latency
+// measurement. Following Rob Pike's Rule #5: the data structure itself tells
+// you that timing is a first-class concern.
+
+// Request metadata - included in all requests for tracing and latency measurement
+message RequestMetadata {
+  string request_id = 1;          // Unique ID for request correlation
+  int64 timestamp_ns = 2;         // Nanosecond timestamp when request was created
+  string strategy_id = 3;         // Strategy that initiated this request
+}
+
+// Response metadata - included in all responses
+message ResponseMetadata {
+  string request_id = 1;          // Echoed from request for correlation
+  int64 request_timestamp_ns = 2; // Echoed from request
+  int64 response_timestamp_ns = 3;// Nanosecond timestamp when response was created
+  int64 processing_time_ns = 4;   // Time spent processing the request
+}
+
+// =============================================================================
+// Exchange Types
+// =============================================================================
+
+// Supported exchanges
+enum Exchange {
+  EXCHANGE_UNSPECIFIED = 0;
+  EXCHANGE_BINANCE = 1;
+  EXCHANGE_BYBIT = 2;
+  EXCHANGE_HYPERLIQUID = 3;
+  EXCHANGE_BACKPACK = 4;
+  EXCHANGE_ASTER = 5;
+  EXCHANGE_LIGHTER = 6;
+  EXCHANGE_DRIFT = 7;
+  EXCHANGE_FUTU = 8;
+}
+
+// Instrument types
+enum InstrumentType {
+  INSTRUMENT_TYPE_UNSPECIFIED = 0;
+  INSTRUMENT_TYPE_SPOT = 1;
+  INSTRUMENT_TYPE_PERP = 2;
+  INSTRUMENT_TYPE_FUTURE = 3;
+}
+
+// Order side
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_BUY = 1;
+  SIDE_SELL = 2;
+}
+
+// Time in force
+enum TimeInForce {
+  TIME_IN_FORCE_UNSPECIFIED = 0;
+  TIME_IN_FORCE_GTC = 1;          // Good 'til canceled
+  TIME_IN_FORCE_IOC = 2;          // Immediate or cancel
+  TIME_IN_FORCE_FOK = 3;          // Fill or kill
+  TIME_IN_FORCE_POST_ONLY = 4;    // Post only (maker)
+}
+
+// Order type
+enum OrderType {
+  ORDER_TYPE_UNSPECIFIED = 0;
+  ORDER_TYPE_LIMIT = 1;
+  ORDER_TYPE_MARKET = 2;
+}
+
+// =============================================================================
+// Order Status
+// =============================================================================
+
+// Order status
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_NEW = 1;
+  ORDER_STATUS_PARTIALLY_FILLED = 2;
+  ORDER_STATUS_FILLED = 3;
+  ORDER_STATUS_CANCELLED = 4;
+  ORDER_STATUS_REJECTED = 5;
+  ORDER_STATUS_EXPIRED = 6;
+}
+
+// Action execution status
+enum ActionStatus {
+  ACTION_STATUS_UNSPECIFIED = 0;
+  ACTION_STATUS_PENDING = 1;       // Action created but not started
+  ACTION_STATUS_RUNNING = 2;       // Action is actively executing
+  ACTION_STATUS_COMPLETED = 3;     // Action completed successfully
+  ACTION_STATUS_FAILED = 4;        // Action failed with error
+  ACTION_STATUS_CANCELLED = 5;     // Action was cancelled
+  ACTION_STATUS_PARTIALLY_COMPLETE = 6; // Action partially completed
+}
+
+// =============================================================================
+// Price Methods for Maker Orders
+// =============================================================================
+// These enums map directly to MakerPriceMethod in hybrid/executions/type.ts
+// The data structure encodes all valid pricing strategies.
+
+enum MakerPriceMethod {
+  MAKER_PRICE_METHOD_UNSPECIFIED = 0;
+  MAKER_PRICE_METHOD_BEST_BID = 1;              // Place at best bid
+  MAKER_PRICE_METHOD_BEST_ASK = 2;              // Place at best ask
+  MAKER_PRICE_METHOD_BEST_BID_EXCLUDE_SELF = 3; // Best bid excluding own orders
+  MAKER_PRICE_METHOD_BEST_ASK_EXCLUDE_SELF = 4; // Best ask excluding own orders
+  MAKER_PRICE_METHOD_BEST_BID_WITH_SPREAD = 5;  // Best bid with spread offset
+  MAKER_PRICE_METHOD_BEST_ASK_WITH_SPREAD = 6;  // Best ask with spread offset
+  MAKER_PRICE_METHOD_MID_PRICE = 7;             // Mid price
+}
+
+// =============================================================================
+// Update Types (for streaming)
+// =============================================================================
+
+enum UpdateType {
+  UPDATE_TYPE_UNSPECIFIED = 0;
+  UPDATE_TYPE_ORDER = 1;
+  UPDATE_TYPE_EXECUTION = 2;
+  UPDATE_TYPE_POSITION = 3;
+  UPDATE_TYPE_WALLET = 4;
+  UPDATE_TYPE_MARKET = 5;
+  UPDATE_TYPE_ACTION_STATUS = 6;
+}
+
+// =============================================================================
+// Exchange Connection Info
+// =============================================================================
+
+message ExchangeInfo {
+  bool connected = 1;
+  bool ws_connected = 2;
+  repeated string available_symbols = 3;
+  string vip_level = 4;
+}
+
+// =============================================================================
+// Symbol Trading Rules - Exchange-specific constraints per symbol
+// =============================================================================
+// These constraints are fetched from exchange APIs (e.g., Binance /fapi/v1/exchangeInfo)
+// and used to validate and plan orders.
+
+message SymbolTradingRules {
+  string symbol = 1;                    // e.g., "BTCUSDT"
+  
+  // Price constraints
+  string tick_size = 2;                 // Minimum price increment (e.g., "0.10")
+  string min_price = 3;                 // Minimum price
+  string max_price = 4;                 // Maximum price
+  int32 price_precision = 5;            // Decimal places for price
+  
+  // Quantity constraints (LOT_SIZE filter)
+  string min_qty = 6;                   // Minimum order quantity (e.g., "0.001")
+  string max_qty = 7;                   // Maximum order quantity
+  string step_size = 8;                 // Quantity increment (e.g., "0.001")
+  int32 qty_precision = 9;              // Decimal places for quantity
+  
+  // Notional value constraints (MIN_NOTIONAL filter)
+  string min_notional = 10;             // Minimum order value in quote currency (e.g., "100" USDT)
+  
+  // Market order constraints (MARKET_LOT_SIZE filter)
+  string market_min_qty = 11;           // Minimum market order quantity
+  string market_max_qty = 12;           // Maximum market order quantity
+  string market_step_size = 13;         // Market order quantity increment
+  
+  // Status
+  bool is_trading = 14;                 // Whether trading is enabled
+}
+
+// Collection of trading rules for multiple symbols
+message ExchangeTradingRules {
+  Exchange exchange = 1;
+  repeated SymbolTradingRules symbols = 2;
+  int64 fetched_at_timestamp = 3;       // When these rules were fetched
+}
+
+// =============================================================================
+// DCA Execution Plan - Smart planning based on exchange constraints
+// =============================================================================
+// This structure is calculated by execd after considering exchange rules,
+// and passed to the worker for execution.
+
+message DcaExecutionPlan {
+  string symbol = 1;
+  Side side = 2;
+  
+  // Target amounts (already validated against exchange rules)
+  string total_qty = 3;                 // Total quantity to fill (precision-adjusted)
+  string dca_step_qty = 4;              // Quantity per DCA step (>= min_qty, multiple of step_size)
+  int32 planned_steps = 5;              // Number of planned DCA steps
+  
+  // Exchange constraints (for worker reference)
+  string min_qty = 6;                   // From SymbolTradingRules
+  string step_size = 7;                 // From SymbolTradingRules
+  string min_notional = 8;              // From SymbolTradingRules
+  string tick_size = 9;                 // From SymbolTradingRules
+  
+  // Execution parameters
+  int32 order_timeout_ms = 10;          // Timeout for individual orders
+  int32 total_timeout_s = 11;           // Total execution timeout
+  bool reduce_only = 12;
+}
+
+// =============================================================================
+// Health Info
+// =============================================================================
+
+message WorkerHealthInfo {
+  int64 uptime_seconds = 1;
+  int32 active_actions = 2;
+  int32 pending_orders = 3;
+  int64 total_requests_processed = 4;
+  int64 last_exchange_heartbeat_ns = 5;
+  bool exchange_connected = 6;
+  bool ws_connected = 7;
+  map<string, double> latency_stats = 8; // e.g., "avg_order_latency_ms"
+}

@@ -1,0 +1,874 @@
+syntax = "proto3";
+
+package execd.worker;
+
+// =============================================================================
+// Worker Service
+// =============================================================================
+// Worker service - runs in the Node.js process, receives commands from execd
+// Uses Unix Domain Sockets for low-latency IPC communication
+service WorkerService {
+  // Register a new strategy worker with exchange credentials
+  // This launches the worker and connects to exchange REST API
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  
+  // Subscribe to market data WebSockets for specified symbols
+  // This connects orderbook/trade WebSockets and private streams (order updates, executions)
+  // Should be called after Register to set up price feeds before executing actions
+  rpc SubscribeMarketData(SubscribeMarketDataRequest) returns (SubscribeMarketDataResponse);
+  
+  // Health check to verify worker is alive
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  
+  // Execute an action (place orders, etc.)
+  rpc ExecuteAction(ActionRequest) returns (ActionResponse);
+  
+  // Subscribe to action updates (fills, cancels, etc.)
+  rpc SubscribeUpdates(SubscribeRequest) returns (stream ActionUpdate);
+  
+  // Cancel a running action
+  rpc CancelAction(CancelActionRequest) returns (CancelActionResponse);
+  
+  // Get current state of an action
+  rpc GetActionState(GetActionStateRequest) returns (GetActionStateResponse);
+  
+  // Shutdown the worker gracefully
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  
+  // =============================================================================
+  // Snapshot Query RPCs - for querying current state from WebSocket streams
+  // =============================================================================
+  
+  // Get current positions for all symbols or a specific symbol
+  rpc GetPositions(GetPositionsRequest) returns (GetPositionsResponse);
+  
+  // Get current portfolio (account balances, equity, margin info)
+  rpc GetPortfolio(GetPortfolioRequest) returns (GetPortfolioResponse);
+  
+  // Get current prices (best bid/ask, mid price) for subscribed symbols
+  rpc GetPrices(GetPricesRequest) returns (GetPricesResponse);
+  
+  // Get exchange trading rules (symbol constraints like min notional, lot size, etc.)
+  // Used by execd to plan DCA execution with valid order sizes
+  rpc GetTradingRules(GetTradingRulesRequest) returns (GetTradingRulesResponse);
+}
+
+// =============================================================================
+// Common Types
+// =============================================================================
+
+// Request metadata - included in all requests for tracing and latency measurement
+message RequestMetadata {
+  string request_id = 1;          // Unique ID for request correlation
+  int64 timestamp_ns = 2;         // Nanosecond timestamp when request was created
+  string strategy_id = 3;         // Strategy that initiated this request
+}
+
+// Response metadata - included in all responses
+message ResponseMetadata {
+  string request_id = 1;          // Echoed from request for correlation
+  int64 request_timestamp_ns = 2; // Echoed from request
+  int64 response_timestamp_ns = 3;// Nanosecond timestamp when response was created
+  int64 processing_time_ns = 4;   // Time spent processing the request
+}
+
+// Exchange types supported
+enum Exchange {
+  EXCHANGE_UNSPECIFIED = 0;
+  EXCHANGE_BINANCE = 1;
+  EXCHANGE_BYBIT = 2;
+  EXCHANGE_HYPERLIQUID = 3;
+  EXCHANGE_BACKPACK = 4;
+  EXCHANGE_ASTER = 5;
+  EXCHANGE_LIGHTER = 6;
+  EXCHANGE_DRIFT = 7;
+  EXCHANGE_FUTU = 8;
+}
+
+// Instrument types
+enum InstrumentType {
+  INSTRUMENT_TYPE_UNSPECIFIED = 0;
+  INSTRUMENT_TYPE_SPOT = 1;
+  INSTRUMENT_TYPE_PERP = 2;
+  INSTRUMENT_TYPE_FUTURE = 3;
+}
+
+// Order side
+enum Side {
+  SIDE_UNSPECIFIED = 0;
+  SIDE_BUY = 1;
+  SIDE_SELL = 2;
+}
+
+// Order status
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_NEW = 1;
+  ORDER_STATUS_PARTIALLY_FILLED = 2;
+  ORDER_STATUS_FILLED = 3;
+  ORDER_STATUS_CANCELLED = 4;
+  ORDER_STATUS_REJECTED = 5;
+  ORDER_STATUS_EXPIRED = 6;
+}
+
+// Action execution status
+enum ActionStatus {
+  ACTION_STATUS_UNSPECIFIED = 0;
+  ACTION_STATUS_PENDING = 1;       // Action created but not started
+  ACTION_STATUS_RUNNING = 2;       // Action is actively executing
+  ACTION_STATUS_COMPLETED = 3;     // Action completed successfully
+  ACTION_STATUS_FAILED = 4;        // Action failed with error
+  ACTION_STATUS_CANCELLED = 5;     // Action was cancelled
+  ACTION_STATUS_PARTIALLY_COMPLETE = 6; // Action partially completed
+}
+
+// Price method for maker orders
+enum MakerPriceMethod {
+  MAKER_PRICE_METHOD_UNSPECIFIED = 0;
+  MAKER_PRICE_METHOD_BEST_BID = 1;
+  MAKER_PRICE_METHOD_BEST_ASK = 2;
+  MAKER_PRICE_METHOD_BEST_BID_EXCLUDE_SELF = 3;
+  MAKER_PRICE_METHOD_BEST_ASK_EXCLUDE_SELF = 4;
+  MAKER_PRICE_METHOD_BEST_BID_WITH_SPREAD = 5;
+  MAKER_PRICE_METHOD_BEST_ASK_WITH_SPREAD = 6;
+  MAKER_PRICE_METHOD_MID_PRICE = 7;
+}
+
+// =============================================================================
+// Registration Messages
+// =============================================================================
+
+message RegisterRequest {
+  RequestMetadata metadata = 1;
+  string strategy_name = 2;
+  Exchange exchange = 3;
+  string api_key = 4;
+  string api_secret = 5;
+  string market = 6;              // e.g., "BTCUSDT", "BTC-PERP"
+  InstrumentType instrument_type = 7;
+  
+  // Optional additional credentials (for exchanges that need more)
+  map<string, string> extra_credentials = 8;
+  
+  // Optional second exchange for arbitrage/multi-exchange strategies
+  Exchange exchange2 = 9;
+  string api_key2 = 10;
+  string api_secret2 = 11;
+  string market2 = 12;            // Second market symbol (can be different from primary)
+  InstrumentType instrument_type2 = 13;
+  map<string, string> extra_credentials2 = 14;
+}
+
+message RegisterResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  string worker_id = 4;           // Unique identifier for this worker instance
+  
+  // Exchange info after connection
+  ExchangeInfo exchange_info = 5;
+}
+
+message ExchangeInfo {
+  bool connected = 1;
+  bool ws_connected = 2;
+  repeated string available_symbols = 3;
+  string vip_level = 4;
+}
+
+// =============================================================================
+// Subscribe Market Data Messages
+// =============================================================================
+// Separate from registration: connects WebSockets for orderbook/trade data and
+// private streams (order updates, executions, wallet updates, positions)
+
+message SubscribeMarketDataRequest {
+  RequestMetadata metadata = 1;
+  
+  // Symbols to subscribe for the primary exchange
+  repeated string symbols = 2;                    // e.g., ["BTCUSDT", "ETHUSDT"]
+  InstrumentType instrument_type = 3;             // Type of instruments
+  
+  // Optional symbols for second exchange (if registered with multi-exchange)
+  repeated string symbols2 = 4;
+  InstrumentType instrument_type2 = 5;
+  
+  // Subscription options
+  bool subscribe_orderbook = 6;                   // L2 orderbook (default true)
+  bool subscribe_trades = 7;                      // Public trade feed
+  bool subscribe_ticker = 8;                      // Last price ticker
+  bool subscribe_private = 9;                     // Order/execution/wallet updates (default true)
+  int32 orderbook_depth = 10;                     // Orderbook depth (e.g., 1, 5, 20, 50)
+}
+
+message SubscribeMarketDataResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  
+  // Subscription status per symbol
+  repeated SymbolSubscriptionStatus subscriptions = 4;
+}
+
+message SymbolSubscriptionStatus {
+  string symbol = 1;
+  Exchange exchange = 2;
+  bool orderbook_subscribed = 3;
+  bool trades_subscribed = 4;
+  bool ticker_subscribed = 5;
+  bool private_subscribed = 6;
+  string error = 7;                               // Error message if subscription failed
+}
+
+// =============================================================================
+// Health Check Messages
+// =============================================================================
+
+message HealthCheckRequest {
+  RequestMetadata metadata = 1;
+}
+
+message HealthCheckResponse {
+  ResponseMetadata metadata = 1;
+  bool healthy = 2;
+  string status = 3;
+  
+  // Detailed health info
+  WorkerHealthInfo health_info = 4;
+}
+
+message WorkerHealthInfo {
+  int64 uptime_seconds = 1;
+  int32 active_actions = 2;
+  int32 pending_orders = 3;
+  int64 total_requests_processed = 4;
+  int64 last_exchange_heartbeat_ns = 5;
+  bool exchange_connected = 6;
+  bool ws_connected = 7;
+  map<string, double> latency_stats = 8; // e.g., "avg_order_latency_ms"
+}
+
+// =============================================================================
+// Action Request/Response Messages
+// =============================================================================
+
+message ActionRequest {
+  RequestMetadata metadata = 1;
+  string action_id = 2;           // Unique ID for this action instance
+  
+  // Action type - using oneof for type safety
+  oneof action {
+    MakerOrderAction maker_order = 10;
+    TakerOrderAction taker_order = 11;
+    MakerTakerAction maker_taker = 12;
+    CancelOrderAction cancel_order = 13;
+    AmendOrderAction amend_order = 14;
+    GetBalanceAction get_balance = 15;
+    GetPositionsAction get_positions = 16;
+    GetOpenOrdersAction get_open_orders = 17;
+    SetLeverageAction set_leverage = 18;
+    DcaMakerOrderAction dca_maker_order = 19;
+    TakerTakerAction taker_taker = 20;
+    DcaTakerOrderAction dca_taker_order = 21;
+  }
+}
+
+message ActionResponse {
+  ResponseMetadata metadata = 1;
+  string action_id = 2;
+  bool success = 3;
+  string message = 4;
+  ActionStatus status = 5;
+  
+  // Response payload based on action type
+  oneof result {
+    OrderResult order_result = 10;
+    BalanceResult balance_result = 11;
+    PositionsResult positions_result = 12;
+    OpenOrdersResult open_orders_result = 13;
+    LeverageResult leverage_result = 14;
+    DcaExecutionResult dca_execution_result = 15;
+    MakerTakerExecutionResult maker_taker_execution_result = 16;
+  }
+}
+
+// Result of a DCA execution (taker or maker)
+message DcaExecutionResult {
+  string filled_amount = 1;       // Total amount actually filled
+  string avg_price = 2;           // Volume-weighted average price
+  int32 order_count = 3;          // Number of orders placed
+  string total_volume = 4;        // Total notional volume (filled_amount * avg_price)
+  string remaining_amount = 5;    // Amount that was not filled (if any)
+  string trading_fee_usd = 6;     // Total trading fees paid in USD
+  int64 reference_time_ns = 7;    // Timestamp (ns) when first order was placed
+  int64 filled_time_ns = 8;       // Timestamp (ns) when execution completed or last order filled
+}
+
+// Result of a Maker-Taker cross-exchange execution
+message MakerTakerExecutionResult {
+  // Maker leg results
+  string maker_filled_qty = 1;    // Total quantity filled on maker exchange
+  string maker_avg_price = 2;     // Volume-weighted average price on maker
+  int32 maker_order_count = 3;    // Number of maker orders placed
+  string maker_total_volume = 4;  // Total notional on maker side
+  
+  // Taker leg results
+  string taker_filled_qty = 5;    // Total quantity filled on taker exchange
+  string taker_avg_price = 6;     // Volume-weighted average price on taker
+  int32 taker_order_count = 7;    // Number of taker orders placed
+  string taker_total_volume = 8;  // Total notional on taker side
+  
+  // Summary
+  string realized_spread_bps = 9; // Actual spread captured in basis points
+  string unfilled_amount = 10;    // Amount not executed (if any)
+}
+
+// =============================================================================
+// Action Types
+// =============================================================================
+
+// Maker Order - Place a passive limit order
+message MakerOrderAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+  Side side = 4;
+  string size = 5;                // Use string for precise decimal
+  MakerPriceMethod price_method = 6;
+  string price_offset = 7;        // Optional offset from reference price
+  int32 order_timeout_ms = 8;     // Timeout before auto-cancel
+  bool cancel_on_partial_fill = 9;
+  string leverage = 10;           // For perp markets
+  bool reduce_only = 11;
+  bool post_only = 12;            // Ensure maker-only execution
+}
+
+// DCA Maker Order - Place multiple maker orders over time using Dollar Cost Averaging
+// Total size is split into smaller orders placed at intervals.
+// This maps directly to MakerExecution in hybrid/executions/implementations/maker.ts
+message DcaMakerOrderAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+  Side side = 4;
+  string total_size = 5;          // Total amount to execute (pendingTokenAmount)
+  string dca_size = 6;            // Size per individual order (dcaTokenAmount)
+  MakerPriceMethod price_method = 7;
+  string price_offset = 8;        // Optional offset from reference price
+  int32 order_timeout_ms = 9;     // Timeout before auto-cancel/replace
+  bool cancel_on_partial_fill = 10;
+  string leverage = 11;           // For perp markets
+  bool reduce_only = 12;
+  bool best_effort_completion = 13; // Continue even if dca_size > remaining
+  
+  // If true, the worker should wait for execution to complete before returning
+  bool wait_for_completion = 14;
+  
+  // Timeout in seconds for wait_for_completion (default: 300 = 5 minutes)
+  int32 timeout_seconds = 15;
+  
+  // REST BBO fallback for non-subscribed symbols (use REST API polling instead of websocket)
+  bool use_rest_bbo_fallback = 16;
+  
+  // REST BBO polling interval in milliseconds (default: 3000 = 3 seconds)
+  uint32 rest_bbo_polling_interval_ms = 17;
+}
+
+// Taker Order - Place an aggressive market/limit order
+message TakerOrderAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+  Side side = 4;
+  string size = 5;
+  string price = 6;               // Empty for market order
+  string leverage = 7;
+  bool reduce_only = 8;
+  string slippage_tolerance = 9;  // Max acceptable slippage
+}
+
+// DCA Taker Order - Place multiple taker orders over time using Dollar Cost Averaging
+// This maps to TakerExecution in hybrid/executions/implementations/taker.ts
+// Used for single-exchange taker execution with DCA (e.g., HIP-3 tokens on Hyperliquid)
+message DcaTakerOrderAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+  Side side = 4;
+  string total_size = 5;          // Total amount to execute (pendingTokenAmount)
+  string dca_size = 6;            // Size per individual order (dcaTokenAmount)
+  // Field 7 removed (was leverage)
+  bool reduce_only = 8;
+  bool best_effort_completion = 9; // Continue even if dca_size > remaining
+  
+  // If true, the worker should wait for execution to complete before returning
+  bool wait_for_completion = 10;
+  
+  // Timeout in seconds for wait_for_completion (default: 300 = 5 minutes)
+  int32 timeout_seconds = 11;
+  
+  // Target final position quantity. For reduceOnly orders, the taker will
+  // query current position and execute: |current_position - target_qty|
+  // This handles partial fills from maker phase correctly.
+  string target_qty = 12;
+}
+
+// Maker-Taker Execution - Coordinated execution across legs
+message MakerTakerAction {
+  // Maker leg
+  Exchange maker_exchange = 1;
+  string maker_symbol = 2;
+  InstrumentType maker_instrument_type = 3;
+  Side maker_side = 4;
+  MakerPriceMethod maker_price_method = 5;
+  string maker_leverage = 6;
+  bool maker_reduce_only = 7;
+  
+  // Taker leg
+  Exchange taker_exchange = 8;
+  string taker_symbol = 9;
+  InstrumentType taker_instrument_type = 10;
+  Side taker_side = 11;
+  string taker_leverage = 12;
+  bool taker_reduce_only = 13;
+  
+  // Execution parameters
+  string pending_amount = 14;
+  string dca_amount = 15;
+  string maker_taker_ratio = 16;
+  int32 order_timeout_ms = 17;
+  bool cancel_on_partial_fill = 18;
+  string spread_threshold = 19;        // Minimum spread in bps before placing/maintaining maker orders
+  bool best_effort_completion = 20;    // If true, continue execution even with DCA < remaining
+  int32 expiry_seconds = 21;           // Time limit for execution (default: 600)
+}
+
+// Taker-Taker Execution - Simultaneous taker orders on two exchanges for arbitrage
+message TakerTakerAction {
+  // Taker1 leg (e.g., Hyperliquid)
+  Exchange taker1_exchange = 1;
+  string taker1_symbol = 2;
+  InstrumentType taker1_instrument_type = 3;
+  Side taker1_side = 4;
+  string taker1_leverage = 5;
+  bool taker1_reduce_only = 6;
+  
+  // Taker2 leg (e.g., Bybit)
+  Exchange taker2_exchange = 7;
+  string taker2_symbol = 8;
+  InstrumentType taker2_instrument_type = 9;
+  Side taker2_side = 10;
+  string taker2_leverage = 11;
+  bool taker2_reduce_only = 12;
+  
+  // Execution parameters
+  string pending_amount = 13;      // Total amount to execute
+  string dca_amount = 14;          // Amount per order
+  int32 order_timeout_ms = 15;     // Timeout for confirmation
+  string spread_threshold = 16;    // Minimum spread to trigger execution (bps)
+  int32 confirmation_ticks = 17;   // Number of ticks to confirm spread before executing
+  int32 expiry_seconds = 18;       // Time limit for execution (default: 600)
+}
+
+// Cancel order
+message CancelOrderAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+  string order_id = 4;
+  bool cancel_all = 5;            // If true, cancel all orders for symbol
+}
+
+// Amend order
+message AmendOrderAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+  string order_id = 4;
+  string new_price = 5;
+  string new_size = 6;
+}
+
+// Get balance
+message GetBalanceAction {
+  Exchange exchange = 1;
+  string asset = 2;               // Empty for all assets
+}
+
+// Get positions
+message GetPositionsAction {
+  Exchange exchange = 1;
+  string symbol = 2;              // Empty for all positions
+}
+
+// Get open orders
+message GetOpenOrdersAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+}
+
+// Set leverage
+message SetLeverageAction {
+  Exchange exchange = 1;
+  string symbol = 2;
+  InstrumentType instrument_type = 3;
+  string leverage = 4;
+}
+
+// =============================================================================
+// Action Results
+// =============================================================================
+
+message OrderResult {
+  string order_id = 1;
+  string client_order_id = 2;
+  OrderStatus status = 3;
+  string executed_qty = 4;
+  string executed_price = 5;
+  string remaining_qty = 6;
+  int64 order_timestamp_ns = 7;
+  int64 fill_timestamp_ns = 8;
+  string fee = 9;
+  string fee_asset = 10;
+}
+
+message BalanceResult {
+  repeated WalletBalance balances = 1;
+}
+
+message WalletBalance {
+  string asset = 1;
+  string free = 2;
+  string locked = 3;
+  string total = 4;
+}
+
+message PositionsResult {
+  repeated Position positions = 1;
+}
+
+message Position {
+  string symbol = 1;
+  Side side = 2;
+  string size = 3;
+  string entry_price = 4;
+  string mark_price = 5;
+  string unrealized_pnl = 6;
+  string leverage = 7;
+  string liquidation_price = 8;
+}
+
+message OpenOrdersResult {
+  repeated OpenOrder orders = 1;
+}
+
+message OpenOrder {
+  string order_id = 1;
+  string client_order_id = 2;
+  string symbol = 3;
+  Side side = 4;
+  string price = 5;
+  string size = 6;
+  string filled_size = 7;
+  OrderStatus status = 8;
+  int64 created_timestamp_ns = 9;
+}
+
+message LeverageResult {
+  bool success = 1;
+  string current_leverage = 2;
+}
+
+// =============================================================================
+// Streaming Updates
+// =============================================================================
+
+message SubscribeRequest {
+  RequestMetadata metadata = 1;
+  repeated UpdateType update_types = 2;
+  repeated string symbols = 3;    // Empty for all symbols
+}
+
+enum UpdateType {
+  UPDATE_TYPE_UNSPECIFIED = 0;
+  UPDATE_TYPE_ORDER = 1;
+  UPDATE_TYPE_EXECUTION = 2;
+  UPDATE_TYPE_POSITION = 3;
+  UPDATE_TYPE_WALLET = 4;
+  UPDATE_TYPE_MARKET = 5;
+  UPDATE_TYPE_ACTION_STATUS = 6;
+}
+
+message ActionUpdate {
+  ResponseMetadata metadata = 1;
+  UpdateType update_type = 2;
+  string action_id = 3;           // Action this update relates to (if applicable)
+  
+  oneof update {
+    OrderUpdatePayload order_update = 10;
+    ExecutionUpdatePayload execution_update = 11;
+    PositionUpdatePayload position_update = 12;
+    WalletUpdatePayload wallet_update = 13;
+    MarketUpdatePayload market_update = 14;
+    ActionStatusUpdate action_status = 15;
+  }
+}
+
+message OrderUpdatePayload {
+  string order_id = 1;
+  string client_order_id = 2;
+  string symbol = 3;
+  Side side = 4;
+  OrderStatus status = 5;
+  string price = 6;
+  string size = 7;
+  string filled_size = 8;
+  string filled_value = 9;
+  int64 timestamp_ns = 10;
+}
+
+message ExecutionUpdatePayload {
+  string execution_id = 1;
+  string order_id = 2;
+  string symbol = 3;
+  Side side = 4;
+  string price = 5;
+  string size = 6;
+  string fee = 7;
+  string fee_asset = 8;
+  int64 timestamp_ns = 9;
+}
+
+message PositionUpdatePayload {
+  string symbol = 1;
+  Side side = 2;
+  string size = 3;
+  string entry_price = 4;
+  string unrealized_pnl = 5;
+  int64 timestamp_ns = 6;
+}
+
+message WalletUpdatePayload {
+  string asset = 1;
+  string balance = 2;
+  string available = 3;
+  int64 timestamp_ns = 4;
+}
+
+message MarketUpdatePayload {
+  string symbol = 1;
+  string best_bid = 2;
+  string best_ask = 3;
+  string last_price = 4;
+  string volume_24h = 5;
+  int64 timestamp_ns = 6;
+}
+
+message ActionStatusUpdate {
+  string action_id = 1;
+  ActionStatus status = 2;
+  string message = 3;
+  string completed_amount = 4;
+  string pending_amount = 5;
+  int64 timestamp_ns = 6;
+}
+
+// =============================================================================
+// Cancel Action
+// =============================================================================
+
+message CancelActionRequest {
+  RequestMetadata metadata = 1;
+  string action_id = 2;
+}
+
+message CancelActionResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+}
+
+// =============================================================================
+// Get Action State
+// =============================================================================
+
+message GetActionStateRequest {
+  RequestMetadata metadata = 1;
+  string action_id = 2;
+}
+
+message GetActionStateResponse {
+  ResponseMetadata metadata = 1;
+  string action_id = 2;
+  ActionStatus status = 3;
+  string message = 4;
+  string completed_amount = 5;
+  string pending_amount = 6;
+  int64 started_timestamp_ns = 7;
+  int64 last_update_timestamp_ns = 8;
+}
+
+// =============================================================================
+// Shutdown
+// =============================================================================
+
+message ShutdownRequest {
+  RequestMetadata metadata = 1;
+  bool force = 2;                 // If true, immediately terminate without cleanup
+}
+
+message ShutdownResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  int32 cancelled_actions = 4;
+}
+
+// =============================================================================
+// Snapshot Query Messages
+// =============================================================================
+// These RPCs allow execd to query current state from the worker's WebSocket streams.
+// The worker maintains real-time positions, portfolio, and market data from exchanges.
+
+// Get current positions
+message GetPositionsRequest {
+  RequestMetadata metadata = 1;
+  string symbol = 2;              // Optional: filter by symbol. Empty = all positions
+  InstrumentType instrument_type = 3;
+}
+
+message GetPositionsResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  repeated PositionSnapshot positions = 4;
+}
+
+message PositionSnapshot {
+  string symbol = 1;
+  InstrumentType instrument_type = 2;
+  Side side = 3;                  // LONG (BUY) or SHORT (SELL)
+  string size = 4;                // Position size (can be negative for short)
+  string entry_price = 5;
+  string mark_price = 6;
+  string unrealized_pnl = 7;
+  string leverage = 8;
+  string liquidation_price = 9;
+  string notional_value = 10;     // size * mark_price
+  int64 updated_at_ns = 11;
+}
+
+// Get current portfolio (account info, balances, equity)
+message GetPortfolioRequest {
+  RequestMetadata metadata = 1;
+}
+
+message GetPortfolioResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  PortfolioSnapshot portfolio = 4;
+}
+
+message PortfolioSnapshot {
+  // Account equity and margin info
+  string total_equity = 1;        // Total account equity in quote currency
+  string available_balance = 2;   // Available balance for trading
+  string used_margin = 3;         // Margin in use
+  string free_margin = 4;         // Free margin
+  string total_unrealized_pnl = 5;
+  
+  // Asset balances
+  repeated AssetBalance balances = 6;
+  
+  // Position summary
+  int32 total_positions = 7;
+  string total_position_value = 8;
+  
+  int64 updated_at_ns = 9;
+}
+
+message AssetBalance {
+  string asset = 1;               // e.g., "USDT", "BTC"
+  string total = 2;
+  string available = 3;
+  string locked = 4;
+}
+
+// Get current prices for subscribed symbols
+message GetPricesRequest {
+  RequestMetadata metadata = 1;
+  repeated string symbols = 2;    // Optional: filter by symbols. Empty = all subscribed
+  InstrumentType instrument_type = 3;
+  bool fetch_missing_from_rest = 4;  // If true, fetch prices from REST API for symbols without cached prices
+}
+
+message GetPricesResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  repeated PriceSnapshot prices = 4;
+}
+
+message PriceSnapshot {
+  string symbol = 1;
+  InstrumentType instrument_type = 2;
+  string best_bid = 3;
+  string best_ask = 4;
+  string mid_price = 5;
+  string last_price = 6;
+  string bid_size = 7;            // Size at best bid
+  string ask_size = 8;            // Size at best ask
+  string spread = 9;              // best_ask - best_bid
+  int64 updated_at_ns = 10;
+}
+
+// =============================================================================
+// Get Trading Rules Messages
+// =============================================================================
+// Fetch exchange-specific trading rules for symbols (min notional, lot size, etc.)
+// This data is used by execd to plan DCA execution with valid order sizes.
+
+message GetTradingRulesRequest {
+  RequestMetadata metadata = 1;
+  repeated string symbols = 2;    // Symbols to get rules for (empty = all available)
+  InstrumentType instrument_type = 3;
+}
+
+message GetTradingRulesResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  repeated SymbolTradingRules rules = 4;
+}
+
+// Trading rules for a single symbol
+message SymbolTradingRules {
+  string symbol = 1;                    // e.g., "BTCUSDT"
+  
+  // Price constraints (PRICE_FILTER)
+  string tick_size = 2;                 // Minimum price increment (e.g., "0.10")
+  string min_price = 3;                 // Minimum price
+  string max_price = 4;                 // Maximum price
+  int32 price_precision = 5;            // Decimal places for price
+  
+  // Quantity constraints (LOT_SIZE filter)
+  string min_qty = 6;                   // Minimum order quantity (e.g., "0.001")
+  string max_qty = 7;                   // Maximum order quantity
+  string step_size = 8;                 // Quantity increment (e.g., "0.001")
+  int32 qty_precision = 9;              // Decimal places for quantity
+  
+  // Notional value constraints (MIN_NOTIONAL filter)
+  string min_notional = 10;             // Minimum order value in quote currency (e.g., "100" USDT)
+  
+  // Market order constraints (MARKET_LOT_SIZE filter)
+  string market_min_qty = 11;           // Minimum market order quantity
+  string market_max_qty = 12;           // Maximum market order quantity
+  string market_step_size = 13;         // Market order quantity increment
+  
+  // Status
+  bool is_trading = 14;                 // Whether trading is enabled
+  string base_asset = 15;               // Base asset (e.g., "BTC")
+  string quote_asset = 16;              // Quote asset (e.g., "USDT")
+}
