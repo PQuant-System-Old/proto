@@ -27,11 +27,6 @@ service SdkService {
   // Execute a single DCA taker order (for Hyperliquid HIP-3 and standard perps)
   rpc ExecuteDcaTaker(SdkDcaTakerRequest) returns (SdkDcaTakerResponse);
   
-  // Execute portfolio-based DCA maker orders
-  // Takes portfolio weights, calculates target positions based on current equity/positions/prices,
-  // then executes DCA maker orders to achieve target. Falls back to taker orders if needed.
-  rpc ExecutePortfolioMaker(SdkPortfolioMakerRequest) returns (SdkPortfolioMakerResponse);
-  
   // Execute maker-taker cross-exchange arbitrage
   // Places maker orders on one exchange and immediately hedges with taker orders on another
   // when the spread threshold is met. Used for funding rate arbitrage + spread capture.
@@ -260,7 +255,6 @@ message SdkBatchDcaMakerRequest {
   int32 timeout_seconds = 6;
   
   // If true, use taker orders to complete any unfilled amounts after expiry
-  // This behavior matches execute_portfolio_maker's taker_fallback
   bool taker_fallback = 7;
   
   // Time limit for maker orders before falling back to taker (seconds, default: 30)
@@ -275,7 +269,7 @@ message SdkBatchDcaMakerRequest {
   
   // Global DCA steps: if > 0, the execution engine will automatically calculate
   // dca_size for each symbol based on trading rules (min_notional, min_qty, step_size).
-  // This overrides individual order.dca_size values. Uses the same formula as execute_portfolio_maker:
+  // This overrides individual order.dca_size values. Formula:
   //   min_qty_for_notional = max(min_notional / price, min_qty)
   //   effective_steps = min(max_possible_steps, dca_steps), capped at 1 minimum
   //   dca_size = ceil(total_size / effective_steps, step_size)
@@ -283,8 +277,8 @@ message SdkBatchDcaMakerRequest {
   uint32 dca_steps = 11;
 }
 
-// Result for a single symbol execution (unified format for both batch DCA and portfolio maker)
-// This message is shared by SdkBatchDcaMakerResponse and SdkPortfolioMakerResponse
+// Result for a single symbol execution
+// Used by SdkBatchDcaMakerResponse
 message SdkSymbolExecutionResult {
   string symbol = 1;
   bool success = 2;
@@ -295,12 +289,12 @@ message SdkSymbolExecutionResult {
   string action_id = 5;
   SdkSide side = 6;               // Direction (BUY or SELL)
   
-  // Target calculation (optional - populated for portfolio execution, empty for batch DCA)
-  string target_weight = 7;       // Requested weight (portfolio only)
-  string target_notional = 8;     // Target notional value (portfolio only)
-  string target_qty = 9;          // Target quantity (portfolio only)
+  // Target calculation
+  string target_weight = 7;       // Requested weight
+  string target_notional = 8;     // Target notional value
+  string target_qty = 9;          // Target quantity
   string current_qty = 10;        // Position quantity before execution
-  string delta_qty = 11;          // Required change (target_qty - current_qty for portfolio, total_size for batch)
+  string delta_qty = 11;          // Required change (total_size for batch)
   
   // Execution results (populated when wait_for_completion=true)
   string filled_qty = 12;         // Total quantity filled
@@ -347,7 +341,7 @@ message SdkDcaMakerResult {
   string trading_fee_usd = 11;    // Total trading fees paid in USD
 }
 
-// Response for batch DCA execution (unified format matching portfolio maker)
+// Response for batch DCA execution
 message SdkBatchDcaMakerResponse {
   SdkResponseMetadata metadata = 1;
   bool success = 2;               // True if all orders completed/started successfully
@@ -535,128 +529,6 @@ message SdkGetPricesResponse {
   bool success = 2;
   string message = 3;
   repeated SdkSymbolPrice prices = 4;
-}
-
-// =============================================================================
-// Portfolio Maker Execution Messages
-// =============================================================================
-// Portfolio-based execution: Takes target portfolio weights and executes
-// DCA maker orders to achieve the target positions. Automatically calculates
-// deltas based on current positions and prices.
-
-// Weight allocation for a single symbol
-message SdkPortfolioWeight {
-  string symbol = 1;              // Symbol to trade (e.g., "BTCUSDT", "ETHUSDT")
-  string weight = 2;              // Target weight as decimal (e.g., "0.075" for 7.5%, "-0.01" for short 1%)
-                                  // Positive = long, Negative = short
-}
-
-// Request to execute portfolio-based maker orders
-message SdkPortfolioMakerRequest {
-  SdkRequestMetadata metadata = 1;
-  string strategy_id = 2;         // Strategy ID from registration
-  SdkInstrumentType instrument_type = 3;
-  
-  // Portfolio weights to target
-  // weight = target_notional / (total_equity * leverage)
-  // Example: weight=0.02 with $1M equity and 1x leverage = $20,000 notional position
-  repeated SdkPortfolioWeight weights = 4;
-  
-  // Execution parameters
-  int32 dca_steps = 5;            // Number of DCA steps (default: 10)
-  int32 expiry_seconds = 6;       // Time limit for maker orders before falling back to taker (default: 300)
-  string leverage = 7;            // Leverage multiplier (default: "1")
-  SdkMakerPriceMethod price_method = 8;  // Price method for maker orders (default: BEST_BID for buy, BEST_ASK for sell)
-  
-  // If true, block until all executions complete and return final results
-  // If false, return immediately with RUNNING status
-  bool wait_for_completion = 9;
-  
-  // Optional timeout in seconds for wait_for_completion (default: expiry_seconds + 60)
-  int32 timeout_seconds = 10;
-  
-  // If true, use taker orders to complete any unfilled amounts after expiry
-  bool taker_fallback = 11;
-  
-  // REST BBO fallback for non-subscribed symbols (enables executing on many symbols without subscribing to all websockets)
-  // If true, use REST API to poll BBO instead of websocket subscription for price updates
-  bool use_rest_bbo_fallback = 12;
-  
-  // REST BBO polling interval in milliseconds (default: 3000 = 3 seconds)
-  uint32 rest_bbo_polling_interval_ms = 13;
-  
-  // Custom equity value for portfolio calculation (optional)
-  // If set (> 0), this value is used instead of querying actual account equity
-  // Useful for simulating different portfolio sizes or testing
-  string config_equity = 14;
-}
-
-// Result for a single symbol in the portfolio execution
-message SdkPortfolioSymbolResult {
-  string symbol = 1;
-  bool success = 2;
-  string message = 3;
-  SdkActionStatus status = 4;
-  
-  // Target calculation
-  string target_weight = 5;       // Requested weight
-  string target_notional = 6;     // Target notional value (weight * equity * leverage)
-  string target_qty = 7;          // Target quantity (target_notional / price)
-  string current_qty = 8;         // Position quantity before execution
-  string delta_qty = 9;           // Required change (target_qty - current_qty)
-  SdkSide side = 10;              // Direction of delta (BUY if delta > 0, SELL if delta < 0)
-  
-  // Execution results (populated when wait_for_completion=true)
-  string filled_qty = 11;         // Total quantity filled
-  string avg_price = 12;          // Volume-weighted average fill price
-  int32 maker_order_count = 13;   // Number of maker orders placed
-  int32 taker_order_count = 14;   // Number of taker orders placed (fallback)
-  string total_volume = 15;       // Total notional volume traded
-  string final_qty = 16;          // Final position quantity after execution
-  string unfilled_qty = 17;       // Quantity not filled (if any)
-  
-  // Post-trade analysis fields
-  string reference_price = 18;    // Price used for slippage calculation (best_ask for BUY, best_bid for SELL)
-  string slippage_bps = 19;       // Slippage in basis points: (avg_price - reference_price) / reference_price * 10000
-                                  // Positive = paid more than reference, Negative = paid less
-  string trading_fee_usd = 20;    // Total trading fees paid in USD for this symbol
-  string maker_fee_usd = 21;      // Trading fees from maker orders (USD)
-  string taker_fee_usd = 22;      // Trading fees from taker orders (USD)
-  
-  // Timing fields
-  int64 reference_time_ns = 23;   // Timestamp (ns) when first order was placed for this symbol
-  int64 filled_time_ns = 24;      // Timestamp (ns) when execution completed (all orders filled or taker fallback done)
-  
-  // Detailed price snapshot at execution start (for advanced analysis)
-  string mid_price = 25;          // Mid price at execution start: (best_bid + best_ask) / 2
-  string best_bid = 26;           // Best bid price at execution start
-  string best_ask = 27;           // Best ask price at execution start
-}
-
-// Response for portfolio execution
-message SdkPortfolioMakerResponse {
-  SdkResponseMetadata metadata = 1;
-  bool success = 2;               // True if all symbols executed successfully
-  string message = 3;
-  
-  // Snapshot data at execution time
-  string equity_at_execution = 4;         // Total equity when execution started (actual or config_equity if provided)
-  string leverage_used = 5;               // Leverage multiplier used
-  int64 execution_start_timestamp = 6;    // Unix timestamp (ms) when execution started
-  int64 execution_end_timestamp = 7;      // Unix timestamp (ms) when execution ended
-  
-  // Per-symbol results
-  repeated SdkPortfolioSymbolResult results = 8;
-  
-  // Summary statistics
-  int32 total_symbols = 9;
-  int32 successful_symbols = 10;
-  int32 failed_symbols = 11;
-  string total_volume_traded = 12;        // Sum of all symbol volumes
-  
-  // Post-trade analysis summary
-  string total_trading_fee_usd = 13;      // Total trading fees across all symbols (USD)
-  string avg_slippage_bps = 14;           // Volume-weighted average slippage in basis points
 }
 
 // =============================================================================

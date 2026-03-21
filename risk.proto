@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package execd.risk;
+
+import "common.proto";
+
+// =============================================================================
+// Risk Service — Passive order-validation gate
+// =============================================================================
+// Called by execd before dispatching every execution RPC to a hybrid worker.
+// Evaluates a pipeline of rules (circuit-breaker, staleness, duplicate,
+// frequency, concurrent-actions, size-limit) and returns APPROVE or REJECT.
+//
+// Design:
+// - Synchronous gate: execd blocks on CheckOrder before proceeding.
+// - Fail-open: if the risk-engine is unreachable, execd proceeds with a warning.
+// - No MODIFY verdict: orders are either approved as-is or rejected.
+
+service RiskService {
+  // Validate an order against the risk rule pipeline.
+  // Returns APPROVE or REJECT with an optional error code.
+  rpc CheckOrder(RiskCheckRequest) returns (RiskCheckResponse);
+
+  // Toggle the circuit breaker for a strategy (or globally).
+  // When enabled, all orders for the target strategy are rejected immediately.
+  rpc SetCircuitBreaker(SetCircuitBreakerRequest) returns (SetCircuitBreakerResponse);
+}
+
+// =============================================================================
+// CheckOrder Messages
+// =============================================================================
+
+message RiskCheckRequest {
+  // Standard request metadata (request_id, timestamp_ns, strategy_id)
+  execd.common.RequestMetadata metadata = 1;
+
+  // Strategy that initiated this order
+  string strategy_id = 2;
+
+  // Exchange the order targets
+  execd.common.Exchange exchange = 3;
+
+  // Trading pair (e.g., "BTCUSDT")
+  string symbol = 4;
+
+  // Order side
+  execd.common.Side side = 5;
+
+  // Instrument type (spot, perp, future)
+  execd.common.InstrumentType instrument_type = 6;
+
+  // Order quantity (decimal string)
+  string quantity = 7;
+
+  // Estimated notional value in USD (decimal string)
+  string notional_usd = 8;
+
+  // The execution RPC being called (e.g., "execute_batch_dca_maker")
+  string action_type = 9;
+}
+
+// Verdict returned by the risk engine
+enum RiskVerdict {
+  RISK_VERDICT_UNSPECIFIED = 0;
+  RISK_VERDICT_APPROVE = 1;
+  RISK_VERDICT_REJECT = 2;
+}
+
+message RiskCheckResponse {
+  // Standard response metadata
+  execd.common.ResponseMetadata metadata = 1;
+
+  // APPROVE or REJECT
+  RiskVerdict verdict = 2;
+
+  // 0 = no error; 20100-20103 for specific rejections
+  int32 error_code = 3;
+
+  // Machine-readable error type (e.g., "AMOUNT_EXCEED_LIMIT", "STALE_REQUEST")
+  string error_type = 4;
+
+  // Human-readable explanation
+  string reason = 5;
+
+  // Which component rejected ("risk_engine", or empty if approved)
+  string rejected_by = 6;
+}
+
+// =============================================================================
+// Circuit Breaker Messages
+// =============================================================================
+
+message SetCircuitBreakerRequest {
+  // Standard request metadata
+  execd.common.RequestMetadata metadata = 1;
+
+  // Target strategy. Empty string = global circuit breaker.
+  string strategy_id = 2;
+
+  // true = enable (block orders), false = disable (allow orders)
+  bool enabled = 3;
+
+  // Reason for toggling (for audit logging)
+  string reason = 4;
+}
+
+message SetCircuitBreakerResponse {
+  // Standard response metadata
+  execd.common.ResponseMetadata metadata = 1;
+
+  // Whether the operation succeeded
+  bool success = 2;
+
+  // Human-readable status message
+  string message = 3;
+}
