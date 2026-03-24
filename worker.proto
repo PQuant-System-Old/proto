@@ -51,6 +51,13 @@ service WorkerService {
   // Get exchange trading rules (symbol constraints like min notional, lot size, etc.)
   // Used by execd to plan DCA execution with valid order sizes
   rpc GetTradingRules(GetTradingRulesRequest) returns (GetTradingRulesResponse);
+  
+  // =============================================================================
+  // Operation RPCs - non-execution operations (margin management, etc.)
+  // =============================================================================
+  
+  // Transfer margin from cross-margin balance into a symbol's isolated margin
+  rpc UpdateIsolatedMargin(UpdateIsolatedMarginRequest) returns (UpdateIsolatedMarginResponse);
 }
 
 // =============================================================================
@@ -723,6 +730,26 @@ message ShutdownResponse {
   bool success = 2;
   string message = 3;
   int32 cancelled_actions = 4;
+}
+
+// =============================================================================
+// Operation Messages
+// =============================================================================
+// These RPCs allow the users to perform some non-execution related operations such 
+// as update isolated margin
+
+// Update isolated margin
+message UpdateIsolatedMarginRequest {
+  RequestMetadata metadata = 1;
+  string symbol = 2;
+  string amount = 3;
+}
+
+message UpdateIsolatedMarginResponse {
+  ResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  string added_margin = 4;
 }
 
 // =============================================================================

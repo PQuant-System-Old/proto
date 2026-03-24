@@ -60,6 +60,13 @@ service SdkService {
   
   // Shutdown a worker
   rpc Shutdown(SdkShutdownRequest) returns (SdkShutdownResponse);
+  
+  // =============================================================================
+  // Operation RPCs - non-execution operations (margin management, etc.)
+  // =============================================================================
+  
+  // Transfer margin from cross-margin balance into a symbol's isolated margin (Hyperliquid)
+  rpc UpdateIsolatedMargin(SdkUpdateIsolatedMarginRequest) returns (SdkUpdateIsolatedMarginResponse);
 }
 
 // =============================================================================
@@ -790,4 +797,24 @@ message SdkTakerTakerResponse {
   // Execution result - uses same structure as MakerTaker
   // maker_* fields represent taker1, taker_* fields represent taker2
   SdkMakerTakerResult result = 4;
+}
+
+// =============================================================================
+// Update Isolated Margin
+// =============================================================================
+
+// Request to transfer margin into a symbol's isolated margin position
+message SdkUpdateIsolatedMarginRequest {
+  SdkRequestMetadata metadata = 1;
+  string strategy_id = 2;
+  string symbol = 3;
+  string amount = 4;               // USDC amount to transfer (capped at available balance)
+}
+
+// Response from isolated margin update
+message SdkUpdateIsolatedMarginResponse {
+  SdkResponseMetadata metadata = 1;
+  bool success = 2;
+  string message = 3;
+  string added_margin = 4;         // Actual amount transferred
 }
