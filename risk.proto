@@ -50,6 +50,13 @@ enum RiskVerdict {
   RISK_VERDICT_REJECT = 2;
 }
 
+// Identifies the type of caller making the SDK request.
+enum CallerType {
+  CALLER_TYPE_UNSPECIFIED = 0;
+  CALLER_TYPE_STRATEGY    = 1;  // Machine — Cognito client_credentials grant
+  CALLER_TYPE_OPERATOR    = 2;  // Human — Google Workspace federated via Cognito
+}
+
 // =============================================================================
 // CheckOrder Messages
 // =============================================================================
@@ -114,6 +121,10 @@ message RiskCheckRequest {
 
   // Stable strategy name — DynamoDB config key (STRATEGY#{strategy_name})
   string strategy_name = 15;
+
+  // Caller identity — populated from validated JWT by the execd auth layer
+  CallerType caller_type = 16;
+  string caller_id = 17;  // client_id (strategy) or sub (operator)
 }
 
 // Structured rejection context returned when verdict = REJECT.
