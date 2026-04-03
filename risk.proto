@@ -7,18 +7,21 @@ import "common.proto";
 // =============================================================================
 // Risk Service — Passive order-validation gate
 // =============================================================================
-// Called by execd before dispatching every execution RPC to a hybrid worker.
+// Called by execd before dispatching every SDK RPC to a hybrid worker.
 // Evaluates a pipeline of rules (circuit-breaker, staleness, duplicate,
-// frequency, concurrent-actions, size-limit) and returns APPROVE or REJECT.
+// frequency, concurrent-actions, size-limit, position-level) and returns
+// APPROVE or REJECT.
 //
 // Design:
 // - Synchronous gate: execd blocks on CheckOrder before proceeding.
 // - Fail-open: if the risk-engine is unreachable, execd proceeds with a warning.
 // - No MODIFY verdict: orders are either approved as-is or rejected.
+// - Standardized envelope: every SDK RPC is mapped to a single RiskCheckRequest
+//   via RequestCategory + repeated OrderLeg.
 
 service RiskService {
-  // Validate an order against the risk rule pipeline.
-  // Returns APPROVE or REJECT with an optional error code.
+  // Validate a request against the risk rule pipeline.
+  // Returns APPROVE or REJECT with optional rejection details.
   rpc CheckOrder(RiskCheckRequest) returns (RiskCheckResponse);
 
   // Toggle the circuit breaker for a strategy (or globally).
@@ -27,43 +30,100 @@ service RiskService {
 }
 
 // =============================================================================
+// Enums
+// =============================================================================
+
+// Categorises the SDK RPC being gated so the risk engine can apply
+// the right rule subset (e.g. skip size checks for QUERY requests).
+enum RequestCategory {
+  REQUEST_CATEGORY_UNSPECIFIED = 0;
+  REQUEST_CATEGORY_EXECUTION   = 1;  // execute_batch_dca_maker, execute_dca_taker, etc.
+  REQUEST_CATEGORY_QUERY       = 2;  // get_positions, get_portfolio, get_prices
+  REQUEST_CATEGORY_LIFECYCLE   = 3;  // register, subscribe, shutdown
+  REQUEST_CATEGORY_OPERATION   = 4;  // update_isolated_margin, etc.
+}
+
+// Verdict returned by the risk engine.
+enum RiskVerdict {
+  RISK_VERDICT_UNSPECIFIED = 0;
+  RISK_VERDICT_APPROVE = 1;
+  RISK_VERDICT_REJECT = 2;
+}
+
+// =============================================================================
 // CheckOrder Messages
 // =============================================================================
+
+// A single order leg within an execution request.
+// For multi-leg RPCs (maker-taker, taker-taker) each leg is a separate entry.
+message OrderLeg {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.Side side = 3;
+  execd.common.InstrumentType instrument_type = 4;
+  string total_size = 5;      // total order size (decimal string)
+  string dca_size = 6;        // per-DCA-step size (decimal string, 0 if N/A)
+  string leverage = 7;        // leverage multiplier (decimal string, 0 if N/A)
+  bool reduce_only = 8;
+  int32 account_id = 9;       // exchange account that will execute this leg
+}
 
 message RiskCheckRequest {
   // Standard request metadata (request_id, timestamp_ns, strategy_id)
   execd.common.RequestMetadata metadata = 1;
 
-  // Strategy that initiated this order
+  // Strategy UUID (ephemeral, assigned at register)
   string strategy_id = 2;
 
-  // Exchange the order targets
-  execd.common.Exchange exchange = 3;
+  // Request category — determines which rules apply
+  RequestCategory category = 3;
 
-  // Trading pair (e.g., "BTCUSDT")
-  string symbol = 4;
+  // The SDK RPC being called (e.g. "execute_batch_dca_maker")
+  string action_type = 4;
 
-  // Order side
-  execd.common.Side side = 5;
+  // Order legs — one per symbol/exchange pair.
+  // Empty for QUERY/LIFECYCLE requests.
+  repeated OrderLeg legs = 5;
 
-  // Instrument type (spot, perp, future)
-  execd.common.InstrumentType instrument_type = 6;
+  // Aggregate quantity across all legs (decimal string, informational)
+  string total_quantity = 6;
 
-  // Order quantity (decimal string)
-  string quantity = 7;
+  // Primary account id
+  int32 account_id = 7;
 
-  // Estimated notional value in USD (decimal string)
-  string notional_usd = 8;
+  // Secondary account id (for arb / cross-exchange legs)
+  int32 account_id_2 = 8;
 
-  // The execution RPC being called (e.g., "execute_batch_dca_maker")
-  string action_type = 9;
+  // Spread threshold in basis points (arb strategies)
+  string spread_threshold_bps = 9;
+
+  // Execution timeout (seconds)
+  int32 timeout_seconds = 10;
+
+  // Whether to wait for full completion before returning
+  bool wait_for_completion = 11;
+
+  // Whether taker fallback is enabled for maker orders
+  bool taker_fallback = 12;
+
+  reserved 13;
+
+  // Opaque serialised SDK request — escape hatch for rules that need
+  // access to fields not captured by the envelope.
+  bytes raw_request = 14;
+
+  // Stable strategy name — DynamoDB config key (STRATEGY#{strategy_name})
+  string strategy_name = 15;
 }
 
-// Verdict returned by the risk engine
-enum RiskVerdict {
-  RISK_VERDICT_UNSPECIFIED = 0;
-  RISK_VERDICT_APPROVE = 1;
-  RISK_VERDICT_REJECT = 2;
+// Structured rejection context returned when verdict = REJECT.
+message RejectionDetails {
+  string rule_name = 1;         // e.g. "size_limit", "circuit_breaker"
+  string category = 2;          // e.g. "EXECUTION", "POSITION"
+  string current_value = 3;     // current metric value (decimal string)
+  string limit_value = 4;       // configured limit (decimal string)
+  string requested_value = 5;   // what the request asked for
+  string resulting_value = 6;   // what the metric would become if approved
 }
 
 message RiskCheckResponse {
@@ -73,10 +133,10 @@ message RiskCheckResponse {
   // APPROVE or REJECT
   RiskVerdict verdict = 2;
 
-  // 0 = no error; 20100-20103 for specific rejections
+  // 0 = no error; 20100-20199 for specific rejections
   int32 error_code = 3;
 
-  // Machine-readable error type (e.g., "AMOUNT_EXCEED_LIMIT", "STALE_REQUEST")
+  // Machine-readable error type (e.g. "AMOUNT_EXCEED_LIMIT", "STALE_REQUEST")
   string error_type = 4;
 
   // Human-readable explanation
@@ -84,6 +144,9 @@ message RiskCheckResponse {
 
   // Which component rejected ("risk_engine", or empty if approved)
   string rejected_by = 6;
+
+  // Structured rejection context (populated only when verdict = REJECT)
+  RejectionDetails rejection_details = 7;
 }
 
 // =============================================================================
