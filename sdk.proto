@@ -116,6 +116,8 @@ enum SdkMakerPriceMethod {
   SDK_MAKER_PRICE_METHOD_BEST_ASK = 2;
   SDK_MAKER_PRICE_METHOD_BEST_BID_EXCLUDE_SELF = 3;
   SDK_MAKER_PRICE_METHOD_BEST_ASK_EXCLUDE_SELF = 4;
+  SDK_MAKER_PRICE_METHOD_BEST_BID_WITH_SPREAD = 5;
+  SDK_MAKER_PRICE_METHOD_BEST_ASK_WITH_SPREAD = 6;
   SDK_MAKER_PRICE_METHOD_MID_PRICE = 7;
 }
 
@@ -127,8 +129,8 @@ enum SdkActionStatus {
   SDK_ACTION_STATUS_COMPLETED = 3;
   SDK_ACTION_STATUS_FAILED = 4;
   SDK_ACTION_STATUS_CANCELLED = 5;
-  SDK_ACTION_STATUS_SKIPPED = 6;              // Below minimum size threshold
-  SDK_ACTION_STATUS_PARTIALLY_COMPLETE = 7;   // Action partially completed
+  SDK_ACTION_STATUS_PARTIALLY_COMPLETE = 6; // Action partially completed
+  SDK_ACTION_STATUS_SKIPPED = 7;            // Below minimum size threshold
 }
 
 // =============================================================================

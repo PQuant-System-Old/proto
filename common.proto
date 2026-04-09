@@ -96,6 +96,7 @@ enum ActionStatus {
   ACTION_STATUS_FAILED = 4;        // Action failed with error
   ACTION_STATUS_CANCELLED = 5;     // Action was cancelled
   ACTION_STATUS_PARTIALLY_COMPLETE = 6; // Action partially completed
+  ACTION_STATUS_SKIPPED = 7;       // Below minimum size threshold
 }
 
 // =============================================================================
