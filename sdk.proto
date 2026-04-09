@@ -127,7 +127,8 @@ enum SdkActionStatus {
   SDK_ACTION_STATUS_COMPLETED = 3;
   SDK_ACTION_STATUS_FAILED = 4;
   SDK_ACTION_STATUS_CANCELLED = 5;
-  SDK_ACTION_STATUS_SKIPPED = 6;  // Below minimum size threshold
+  SDK_ACTION_STATUS_SKIPPED = 6;              // Below minimum size threshold
+  SDK_ACTION_STATUS_PARTIALLY_COMPLETE = 7;   // Action partially completed
 }
 
 // =============================================================================

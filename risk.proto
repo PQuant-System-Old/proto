@@ -85,39 +85,9 @@ message RiskCheckRequest {
   // Request category — determines which rules apply
   RequestCategory category = 3;
 
-  // The SDK RPC being called (e.g. "execute_batch_dca_maker")
-  string action_type = 4;
-
   // Order legs — one per symbol/exchange pair.
   // Empty for QUERY/LIFECYCLE requests.
   repeated OrderLeg legs = 5;
-
-  // Aggregate quantity across all legs (decimal string, informational)
-  string total_quantity = 6;
-
-  // Primary account id
-  int32 account_id = 7;
-
-  // Secondary account id (for arb / cross-exchange legs)
-  int32 account_id_2 = 8;
-
-  // Spread threshold in basis points (arb strategies)
-  string spread_threshold_bps = 9;
-
-  // Execution timeout (seconds)
-  int32 timeout_seconds = 10;
-
-  // Whether to wait for full completion before returning
-  bool wait_for_completion = 11;
-
-  // Whether taker fallback is enabled for maker orders
-  bool taker_fallback = 12;
-
-  reserved 13;
-
-  // Opaque serialised SDK request — escape hatch for rules that need
-  // access to fields not captured by the envelope.
-  bytes raw_request = 14;
 
   // Stable strategy name — DynamoDB config key (STRATEGY#{strategy_name})
   string strategy_name = 15;

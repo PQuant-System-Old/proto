@@ -8,6 +8,11 @@ import "common.proto";
 // Action Types
 // =============================================================================
 // Each action type encodes all the parameters needed for execution.
+//
+// SYNC NOTE: worker.proto re-declares these messages in the execd.worker
+// package (self-contained for hybrid-py codegen). When adding fields here,
+// also update worker.proto. The long-term plan is to make worker.proto
+// import this file — tracked as tech debt.
 // Following Rob Pike's Rule #5: the data structure determines behavior.
 // 
 // Example: MakerOrderAction with price_method = BEST_BID tells you:
@@ -57,6 +62,10 @@ message DCAMakerOrderAction {
   string leverage = 11;
   bool reduce_only = 12;
   bool best_effort_completion = 13;             // Continue even if dca_size > remaining
+  bool wait_for_completion = 14;                // If true, block until execution completes
+  int32 timeout_seconds = 15;                   // Timeout for wait_for_completion (default: 300)
+  bool use_rest_bbo_fallback = 16;              // Poll BBO via REST instead of websocket
+  uint32 rest_bbo_polling_interval_ms = 17;     // Polling interval in ms (default: 3000)
 }
 
 // =============================================================================
@@ -75,6 +84,27 @@ message TakerOrderAction {
   string leverage = 7;
   bool reduce_only = 8;
   string slippage_tolerance = 9;                // Max acceptable slippage
+}
+
+// =============================================================================
+// DCA Taker Order Action
+// =============================================================================
+// Single-exchange taker DCA. Executes taker orders with Dollar Cost Averaging.
+// Useful for HIP-3 tokens on Hyperliquid (e.g., xyz:TSLA, xyz:GOOGL).
+
+message DcaTakerOrderAction {
+  execd.common.Exchange exchange = 1;
+  string symbol = 2;
+  execd.common.InstrumentType instrument_type = 3;
+  execd.common.Side side = 4;
+  string total_size = 5;                        // Total amount to execute
+  string dca_size = 6;                          // Size per individual order
+  // Field 7 removed (was leverage)
+  bool reduce_only = 8;
+  bool best_effort_completion = 9;              // Continue even if dca_size > remaining
+  bool wait_for_completion = 10;                // If true, block until execution completes
+  int32 timeout_seconds = 11;                   // Timeout for wait_for_completion (default: 300)
+  string target_qty = 12;                       // Target final position (for reduceOnly: |current - target|)
 }
 
 // =============================================================================
@@ -107,6 +137,41 @@ message MakerTakerAction {
   string maker_taker_ratio = 16;
   int32 order_timeout_ms = 17;
   bool cancel_on_partial_fill = 18;
+  string spread_threshold = 19;                 // Minimum spread in bps before placing maker orders
+  bool best_effort_completion = 20;             // Continue execution even with DCA < remaining
+  int32 expiry_seconds = 21;                    // Time limit for execution (default: 600)
+}
+
+// =============================================================================
+// Taker-Taker Action
+// =============================================================================
+// Simultaneous taker orders on two exchanges for arbitrage.
+// Both legs execute as aggressive market orders.
+
+message TakerTakerAction {
+  // Taker1 leg
+  execd.common.Exchange taker1_exchange = 1;
+  string taker1_symbol = 2;
+  execd.common.InstrumentType taker1_instrument_type = 3;
+  execd.common.Side taker1_side = 4;
+  string taker1_leverage = 5;
+  bool taker1_reduce_only = 6;
+
+  // Taker2 leg
+  execd.common.Exchange taker2_exchange = 7;
+  string taker2_symbol = 8;
+  execd.common.InstrumentType taker2_instrument_type = 9;
+  execd.common.Side taker2_side = 10;
+  string taker2_leverage = 11;
+  bool taker2_reduce_only = 12;
+
+  // Execution parameters
+  string pending_amount = 13;                   // Total amount to execute
+  string dca_amount = 14;                       // Amount per order
+  int32 order_timeout_ms = 15;                  // Timeout for confirmation
+  string spread_threshold = 16;                 // Minimum spread to trigger execution (bps)
+  int32 confirmation_ticks = 17;                // Number of ticks to confirm spread
+  int32 expiry_seconds = 18;                    // Time limit for execution (default: 600)
 }
 
 // =============================================================================

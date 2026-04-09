@@ -5,8 +5,13 @@ package execd.worker;
 // =============================================================================
 // Worker Service
 // =============================================================================
-// Worker service - runs in the Node.js process, receives commands from execd
-// Uses Unix Domain Sockets for low-latency IPC communication
+// Worker service - runs in the Node.js process, receives commands from execd.
+// Uses Unix Domain Sockets for low-latency IPC communication.
+//
+// SYNC NOTE: This file is self-contained (no imports) for hybrid-py codegen
+// simplicity. Action messages and enums mirror actions.proto and common.proto.
+// When adding fields, also update actions.proto. The long-term plan is to make
+// this file import actions.proto/common.proto — tracked as tech debt.
 service WorkerService {
   // Register a new strategy worker with exchange credentials
   // This launches the worker and connects to exchange REST API
